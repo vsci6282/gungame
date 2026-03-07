@@ -2,14 +2,15 @@ import pygame
 pygame.font.init()
 import pymunk as pym
 import pymunk.pygame_util
-import time as t
 import numpy as npy
+import matplotlib.pyplot as plt
+import pygame
+import time as t
+import random as r
+import gymnasium as gym
+from gymnasium import spaces
+import pdb
 
-
-
-space = pym.Space()
-space.gravity = (0, 500)
-space.iterations = 30
 
 clock = pygame.time.Clock()
 screen = pygame.display.set_mode((1000, 600))
@@ -24,100 +25,117 @@ guns = ["ball", "grenade"]
 enemies = []
 
 class Player:
-    def __init__(self):
+    def __init__(self, space, env=None, color=(0, 0, 255)):
+        self.env = env
+        self.space = space
+        self.color = color
         self.body = pym.Body(10, pym.moment_for_box(10, (25, 25)), body_type=pym.Body.DYNAMIC)
-        self.body.position = (500, 300)
+        self.body.position = (500 + r.randint(-100, 100), 300)
         self.body.angle = 0
         self.bodyShape = pym.Poly.create_box(self.body, (25, 25), 0.5)
         self.bodyShape.elasticity = 0.0
         self.bodyShape.friction = 0.5
+        self.bodyShape.data = self
         self.bodyShape.collision_type = 1
         self.maxspeedx = 400
-        self.maxspeedy = 400
+        self.maxspeedy = 800
         self.jump = 400
         self.jumpCooldown = 0
         self.fireCooldown = 0
-        self.gun = 'ball'
+        self.gun = 'grenade'
+        self.health = 100
+        self.maxHealth = 100
+        self.damageTimer = 15
         self.isCrouching = False
-        space.add(self.body, self.bodyShape)
+        self.reward = 0
+        if self == self.env.PlayerA:
+            self.enemy = self.env.PlayerB
+        else:
+            self.enemy = self.env.PlayerA
+        self.space.add(self.body, self.bodyShape)
 
     def draw(self, surface):
-        self.vertices = [to_pygame(self.body.local_to_world(v)) for v in self.bodyShape.get_vertices()]
-        self.PYGpoly = pygame.draw.polygon(surface, (0, 50, 150), self.vertices)
+        self.vertices = [to_pygame(self.body.local_to_world(v), self.env.camerapos) for v in self.bodyShape.get_vertices()]
+        self.PYGpoly = pygame.draw.polygon(surface, self.color, self.vertices)
+        text(str(self.health), surface, 10, to_pygame(self.body.position + (0, -20), self.env.camerapos), (255, 255, 255), (0, 0, 0))
         #pygame.draw.circle(surface, (255, 255, 255), self.body.position, 6)
 
-    def update(self, keys):
+    def isGettingDamaged(self):
+        for e in self.env.explosions:
+            print("check")
+            if e.isWithinRange(self.body.position):
+                return True
+        return False
+
+    def update(self, action):
+        self.reward = 0
+        self.damageTimer -= 1
         self.body.angle = 0
         self.bodyShape.friction = 1
         if self.onGround and self.jumpCooldown <= 0:
             self.canJump = True
         else:
             self.canJump = False
+        print(self.onGround)
+
         self.jumpCooldown -= 1
         self.fireCooldown -= 1
 
-        if keys[pygame.K_UP] or keys[pygame.K_w]:
+        if action[0] == 0:
             if self.canJump:
                 self.body.velocity += (0, -self.jump)
                 self.jumpCooldown = 80
-        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+        if action[0] == 1:
             self.bodyShape.friction = 10
             self.isCrouching = True
             print(self.isCrouching)
         else:
             self.isCrouching = False
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+        if action[0] == 2:
             self.bodyShape.friction = 0.2
             if self.body.velocity[0] < self.maxspeedx:
                 if self.onGround:
                     self.body.apply_force_at_local_point((20000, 0))
                 else:
-                    self.body.apply_force_at_local_point((2000, 0))
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+                    self.body.apply_force_at_local_point((5000, 0))
+        if action[0] == 3:
             self.bodyShape.friction = 0.2
             if self.body.velocity[0] > -self.maxspeedx:
                 if self.onGround:
                     self.body.apply_force_at_local_point((-20000, 0))
                 else:
-                    self.body.apply_force_at_local_point((-2000, 0))
-        if keys[pygame.K_1]:
-            self.gun = guns[0]
-        if keys[pygame.K_2]:
-            self.gun = guns[1]
-            '''if keys[pygame.K_3]:
-                self.gun = guns[2]
-            if keys[pygame.K_4]:
-                self.gun = guns[3]
-            if keys[pygame.K_5]:
-                self.gun = guns[4]
-            if keys[pygame.K_6]:
-                self.gun = guns[5]
-            if keys[pygame.K_7]:
-                self.gun = guns[6]
-            if keys[pygame.K_8]:
-                self.gun = guns[7]
-            if keys[pygame.K_9]:
-                self.gun = guns[8]'''
+                    self.body.apply_force_at_local_point((-5000, 0))
 
-        if pygame.mouse.get_pressed()[0] and self.fireCooldown < 0:
-            self.fire()
+        if action[1] == 1 and self.fireCooldown < 0:
+            self.fire(action[2])
 
         if self.body.velocity[1] > 10:
             self.body.apply_force_at_world_point((0, 3000), self.body.position)
 
-    def fire(self):
-        mpos = pygame.mouse.get_pos()
-        bodypos = to_pygame(self.body.position)
-        angle = get_angle(mpos, bodypos)
-        if self.gun == "ball":
-            BallBullet(500, angle, self.body.position, self)
-        elif self.gun == "grenade":
-            Grenade(300, angle, self.body.position, self)
+        if self.isGettingDamaged() and self.damageTimer < 0:
+            self.reward -= 5
+            self.health -= 5
+            print("ow")
+            self.damageTimer = 10
 
-    def ifOnGround(self, arbiter, space, data):
-        self.onGround = True
-        return None
+        return self.reward
+    def fire(self, angle):
+        if self.gun == "grenade":
+            Grenade(300, angle, self.body.position, self, self.env.space)
 
+    def reset(self):
+        self.body.position = (500 + r.randint(-100, 100), 300)
+        self.body.angle = 0
+        self.bodyShape.data = self
+        self.jumpCooldown = 0
+        self.fireCooldown = 0
+        self.health = 100
+        self.isCrouching = False
+        self.space.add(self.body, self.bodyShape)
+
+
+
+'''
 class BallBullet:
     def __init__(self, speed, angle, pos, player):
         bullets.append(self)
@@ -135,7 +153,7 @@ class BallBullet:
         self.cooldown = 7
         self.body.velocity = (speed * npy.cos(angle), speed * npy.sin(angle))
         player.fireCooldown = self.cooldown
-        space.add(self.body, self.bodyShape)
+        self.space.add(self.body, self.bodyShape)
 
     def onTouchingEnemy(self, enemy):
         pass
@@ -145,11 +163,12 @@ class BallBullet:
         if self.lifeCycle < 0:
             bullets.remove(self)
             delete(self)
-        pygame.draw.circle(screen, (0, 255, 255), to_pygame(self.body.position), 6)
-
+        pygame.draw.circle(screen, (0, 255, 255), to_pygame(self.body.position, self.env.camerapos), 6)
+'''
 class Grenade:
-    def __init__(self, speed, angle, pos, player):
-        bullets.append(self)
+    def __init__(self, speed, angle, pos, player, space):
+        self.space = space
+        player.env.bullets.append(self)
         self.body = pym.Body(3, pym.moment_for_circle(10, 0, 6), body_type=pym.Body.DYNAMIC)
         try:
             self.body.position = pos + (20 * npy.cos(angle), 20 * npy.sin(angle))
@@ -164,11 +183,13 @@ class Grenade:
         self.bodyShape.collision_type = 3
         self.cooldown = 10
         self.body.velocity = (speed * npy.cos(angle), speed * npy.sin(angle))
+        self.player = player
+        self.env = self.player.env
         player.fireCooldown = self.cooldown
-        space.add(self.body, self.bodyShape)
+        self.space.add(self.body, self.bodyShape)
 
     def update(self, screen):
-        pygame.draw.circle(screen, (90, 90, 90), to_pygame(self.body.position), 6)
+        pygame.draw.circle(screen, (90, 90, 90), to_pygame(self.body.position, self.player.env.camerapos), 6)
         self.lifeCycle -= 1
         if self.lifeCycle < 0:
             self.explode()
@@ -177,16 +198,20 @@ class Grenade:
         self.explode()
 
     def explode(self):
-        Explosion(80, self.body.position, 10)
-        bullets.remove(self)
+        Explosion(80, self.body.position, 10, self.env)
+        try:
+            self.player.env.bullets.remove(self)
+        except ValueError:
+            pass
         delete(self)
 
 class Explosion:
-    def __init__(self, rad, pos, span):
+    def __init__(self, rad, pos, span, env=None):
         self.pos = pos
         self.rad = rad
         self.lifeCycle = span
-        explosions.append(self)
+        self.env = env
+        self.env.explosions.append(self)
         for body in getAllBodies():
             if self.isWithinRange(body.position):
                 dis = get_dist(self.pos, body.position)
@@ -194,16 +219,17 @@ class Explosion:
                 body.apply_impulse_at_world_point((strength*dis[1]/dis[0], strength*dis[2]/dis[0]), body.position)
 
     def draw(self, surface):
-        pygame.draw.circle(surface, (204, 102, 0), to_pygame(self.pos), self.rad)
+        pygame.draw.circle(surface, (204, 102, 0), to_pygame(self.pos, self.env.camerapos), self.rad)
         self.lifeCycle -= 1
         if self.lifeCycle < 0:
-            explosions.remove(self)
+            self.env.explosions.remove(self)
 
     def isWithinRange(self, pos):
         if (pos[0] - self.pos[0])**2 + (pos[1] - self.pos[1])**2 <= self.rad**2:
             return True
         return False
 
+'''
 class TriangleEnemy:
     def __init__(self, pos):
         enemies.append(self)
@@ -251,22 +277,144 @@ class TriangleEnemy:
             self.health -= 30
             print("ow")
             self.damageTimer = 10
-
-
+'''
 
 class Rect:
-    def __init__(self, pos, size):
+    def __init__(self, pos, size, env=None):
+        self.space = env.space
         self.body = pym.Body(body_type=pym.Body.KINEMATIC)
         self.body.position = pos
         self.bodyShape = pym.Poly.create_box(self.body, size, 0.5)
         self.bodyShape.elasticity = 1
         self.bodyShape.friction = 1
         self.bodyShape.collision_type = 2
-        space.add(self.body, self.bodyShape)
+        self.env = env
+        self.space.add(self.body, self.bodyShape)
 
     def draw(self, surface):
-        self.vertices = [to_pygame(self.body.local_to_world(v)) for v in self.bodyShape.get_vertices()]
+        self.vertices = [to_pygame(self.body.local_to_world(v), self.env.camerapos) for v in self.bodyShape.get_vertices()]
         self.PYGpoly = pygame.draw.polygon(surface, (100, 100, 100), self.vertices)
+
+class GunEnv(gym.Env):
+    WinLoseRew = 10
+    damageRew = 1
+    space = pym.Space()
+    space.gravity = (0, 500)
+    space.iterations = 30
+
+    clock = pygame.time.Clock()
+    frame = 0
+    screen = pygame.display.set_mode((1000, 600))
+    pygame.display.set_caption("")
+
+    maxTrainingSteps = 10000
+    trainingSteps = 0
+
+    bullets = []
+    explosions = []
+    guns = ["grenade"]
+
+    def __init__(self, isRendering, hasHumanPlayer):
+        self.isRendering = isRendering
+        self.hasHumanPlayer = hasHumanPlayer
+        self.PlayerA = Player(self.space, self, (200, 0, 0))
+        self.PlayerB = Player(self.space, self, (0, 0, 200))
+        self.action_space = spaces.Tuple((spaces.Discrete(4), spaces.Discrete(359),
+                                         spaces.Discrete(1))) #(button, isFiring, firingAngle)
+        self.observation_space = spaces.Tuple((spaces.Box(low=-npy.inf, high=npy.inf, shape=(2, 2)),
+                                               spaces.Box(low=-npy.inf, high=npy.inf, shape=(2, 2)),
+                                               spaces.Sequence(spaces.Box(low=-npy.inf, high=npy.inf, shape=(2,2)))))
+                                               #((playerPos, playerVel), (enemyPos, enemyVel), ((bulletPos, bulletVel)...))
+
+        self.selectedPlayer = self.PlayerA
+
+        self.ground = [Rect((500, 500), (1000, 100), self),
+                  Rect((1300, 450), (1000, 150), self),
+                  Rect((-300, 450), (1000, 150), self),
+                  Rect([100, 300], [500, 25], self),
+                  Rect([1300, 200], [700, 50], self),
+                  Rect([1300, 400], [45, 200], self),
+                  Rect((2000, 375), (500, 250), self),
+                  Rect((1000, 75), (40, 250), self),
+                  Rect((2000, 50), (200, 50), self),
+                  Rect((-1300, 400), (1000, 75), self),
+                  Rect((-1600, 300), (50, 200), self),
+                  Rect((-1900, 100), (50, 350), self),
+                  Rect((-2300, 400), (1000, 75), self), ]
+
+        if self.isRendering:
+            self.camerapos = [0, 0]
+
+    def _get_obs(self):
+        playerArr = npy.array(self.PlayerA.body.position, self.PlayerA.body.velocity)
+        enemyArr = npy.array(self.PlayerB.body.position, self.PlayerB.body.velocity)
+        bulletsArr = [npy.array([b.body.position, b.body.velocity]) for b in self.bullets]
+        return (playerArr, enemyArr, bulletsArr)
+
+    def reset(self):
+        self.PlayerA.reset()
+        self.PlayerB.reset()
+        for b in self.bullets:
+            delete(b)
+        self.bullets = []
+        self.explosions = []
+        self.trainingSteps = 0
+        return self._get_obs(), {}
+
+    def step(self, action):
+        reward = 0
+        self.trainingSteps += 1
+        done = False
+
+        self.PlayerA.onGround = False
+        self.PlayerB.onGround = False
+
+        if isNotPaused:
+            self.frame += 1
+            self.space.step(1 / 60)
+        s = t.time()
+
+        screen.fill((0, 0, 0))
+
+        reward += self.PlayerA.update(action)
+        reward -= self.PlayerB.update(action)
+
+        if self.PlayerA.health <= 0:
+            reward -= 100
+            done = True
+        if self.PlayerB.health <= 0:
+            reward += 100
+            done = True
+
+        for e in enemies:
+            e.update()
+
+        if self.selectedPlayer == 'A':
+            self.camerapos[0] -= ((self.PlayerA.body.position[0]+(((pygame.mouse.get_pos())[0] - 500)/2)/2) + (self.camerapos[0] - 500))/10
+            self.camerapos[1] -= ((self.PlayerA.body.position[1]+(((pygame.mouse.get_pos())[1] - 300)/2)/2) + (self.camerapos[1] - 300))/10
+        else:
+            self.camerapos[0] -= ((self.PlayerB.body.position[0] + (((pygame.mouse.get_pos())[0] - 500) / 2) / 2) + (self.camerapos[0] - 500)) / 10
+            self.camerapos[1] -= ((self.PlayerB.body.position[1] + (((pygame.mouse.get_pos())[1] - 300) / 2) / 2) + (self.camerapos[1] - 300)) / 10
+
+        frame_time = t.time() - s
+        if frame_time < 1 / 60:
+            t.sleep(1 / 60 - frame_time)
+
+        if self.trainingSteps >= self.maxTrainingSteps:
+            done = True
+
+        return self._get_obs(), reward, done, {}
+
+    def render(self):
+        for exp in self.explosions:
+            exp.draw(screen)
+        self.PlayerA.draw(screen)
+        self.PlayerB.draw(screen)
+        for r in self.ground:
+            r.draw(screen)
+        for b in self.bullets:
+            b.update(screen)
+        pygame.display.flip()
 
 '''
     To obtain a list of all bodies present in a Pymunk Space object, the pymunk.batch module can be utilized. This module provides efficient methods for retrieving batched data from the space.
@@ -313,17 +461,14 @@ def onBulletTouchEnemy(arbiter, space, data):
         enemyShape = shape_a
 
     bullet = bulletShape.user_data
-    enemy = enemyShape.user_data
+    enemy = enemyShape.data
 
     if callable(bullet.onTouchingEnemy):
         bullet.onTouchingEnemy(enemy)
 
-    if callable(enemy.onTouchingBullet):
-        enemy.onTouchingBullet(bullet)
-
     return None
 
-def to_pygame(pos):
+def to_pygame(pos, camerapos):
     """ Convert Pymunk physics coordinates to Pygame coordinates. """
     if isinstance(pos, list):
         return [(v.x + camerapos[0], v.y + camerapos[1]) for v in pos]
@@ -331,7 +476,7 @@ def to_pygame(pos):
         return int(pos[0] + camerapos[0]), int(pos[1] + camerapos[1])
     return int(pos.x + camerapos[0]), int(pos.y + camerapos[1])  # Handle Pymunk Vec2d objects
 
-def to_pymunk(pos):
+def to_pymunk(pos, camerapos):
     return (pos[0] - camerapos[0], pos[1] - camerapos[1])
 
 def debug(message, value):
@@ -339,12 +484,12 @@ def debug(message, value):
 
 def delete(self):
     try:
-        space.remove(self.body, self.bodyShape)
+        env.space.remove(self.body, self.bodyShape)
     except AssertionError:
         pass
 
 def getAllBodies():
-    return space.bodies
+    return env.space.bodies
 
 def get_angle(p1, p2):
     return npy.arctan2(p1[1] - p2[1], p1[0] - p2[0])
@@ -359,26 +504,17 @@ def text(text, screen, size, position, color, background):
     text_rect.center = position
     screen.blit(text_surface, text_rect)
 
+def ifPlayerOnGround(arbiter, space, data):
+    arbiter.shapes[0].data.onGround = True
+    return None
+
 running = True
 isNotPaused = True
 frame = 0
 
-TriangleEnemy((500, 200))
 
-p = Player()
-'''ground = [Rect((500, 500), (1000, 100)),
-          Rect((1300, 450), (1000, 150)),
-          Rect((-300, 450), (1000, 150)),
-          Rect([100, 300], [500, 25]),
-          Rect([1300, 200], [700, 50]),
-          Rect([1300, 400], [45, 200]),
-          Rect((2000, 375), (500, 250)),
-          Rect((1000, 75), (40, 250)),
-          Rect((2000, 50), (200, 50)),
-          Rect((-1300, 400), (1000, 75)),
-          Rect((-1600, 300), (50, 200)),
-          Rect((-1900, 100), (50, 350)),
-          Rect((-2300, 400), (1000, 75)),]'''
+#p = Player()
+'''
 
 ground = [
 Rect((500, 500), (1000, 100)),
@@ -386,41 +522,45 @@ Rect((-50, 0), (100, 1100)),
 Rect((1000, 0), (100, 1100)),
 Rect((500, 350), (500, 30)),
 ]
+'''
+env = GunEnv(True, True)
 
-space.on_collision(
+env.space.on_collision(
     collision_type_a=1,
     collision_type_b=2,
-    begin=None,
-    pre_solve=p.ifOnGround,
-    post_solve=None,
-    separate=None,
-    data=None
+    pre_solve=ifPlayerOnGround,
 )
 
-space.on_collision(
+env.space.on_collision(
     collision_type_a=1,
     collision_type_b=3,
-    begin=None,
-    pre_solve=p.ifOnGround,
-    post_solve=None,
-    separate=None,
-    data=None
-)
-
-space.on_collision(
-    collision_type_a=3,
-    collision_type_b=4,
-    begin=None,
     pre_solve=onBulletTouchEnemy,
-    post_solve=None,
-    separate=None,
-    data=None
 )
 
+buttons = [pygame.K_w, pygame.K_s, pygame.K_d, pygame.K_a]
 
+while running:
+    Keys = pygame.key.get_pressed()
+    B = 4
+    for b in buttons:
+        if Keys[b]:
+            B = buttons.index(b)
+    if pygame.mouse.get_pressed()[0]:
+        isFiring = 1
+    else:
+        isFiring = 0
+    mpos = pygame.mouse.get_pos()
+    bodypos = to_pygame(env.selectedPlayer.body.position, env.camerapos)
+    angle = get_angle(mpos, bodypos)
+    env.step(npy.array([B, isFiring, angle]))
+    print([B, isFiring])
+    env.render()
+    for ev in pygame.event.get():
+        if ev.type == pygame.QUIT:
+            running = False
 
+'''
 camerapos = [30, 0]
-
 while running:
     p.onGround = False
 
@@ -465,3 +605,4 @@ while running:
     if frame_time < 1 / 60:
         t.sleep(1 / 60 - frame_time)
       # Pymunk physics step
+'''
