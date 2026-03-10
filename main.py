@@ -1,15 +1,16 @@
+import pdb
+
 import pygame
 pygame.font.init()
+import matplotlib.pyplot as plt
 import pymunk as pym
 import pymunk.pygame_util
 import numpy as npy
-import matplotlib.pyplot as plt
 import pygame
 import time as t
 import random as r
 import gymnasium as gym
 from gymnasium import spaces
-import pdb
 
 
 clock = pygame.time.Clock()
@@ -25,12 +26,14 @@ guns = ["ball", "grenade"]
 enemies = []
 
 class Player:
-    def __init__(self, space, env=None, color=(0, 0, 255)):
+    onGround = False
+    def __init__(self, space, env=None, color=(0, 0, 255), pos=(500, 300)):
         self.env = env
+        self.playerDamageDict = {True: self.env.selfDamagePun, False: self.env.enemyDamageRew}
         self.space = space
         self.color = color
         self.body = pym.Body(10, pym.moment_for_box(10, (25, 25)), body_type=pym.Body.DYNAMIC)
-        self.body.position = (500 + r.randint(-100, 100), 300)
+        self.body.position = pos
         self.body.angle = 0
         self.bodyShape = pym.Poly.create_box(self.body, (25, 25), 0.5)
         self.bodyShape.elasticity = 0.0
@@ -39,7 +42,7 @@ class Player:
         self.bodyShape.collision_type = 1
         self.maxspeedx = 400
         self.maxspeedy = 800
-        self.jump = 400
+        self.jump = 500
         self.jumpCooldown = 0
         self.fireCooldown = 0
         self.gun = 'grenade'
@@ -48,24 +51,20 @@ class Player:
         self.damageTimer = 15
         self.isCrouching = False
         self.reward = 0
-        if self == self.env.PlayerA:
-            self.enemy = self.env.PlayerB
-        else:
-            self.enemy = self.env.PlayerA
         self.space.add(self.body, self.bodyShape)
 
-    def draw(self, surface):
+    def draw(self, surface, isBlittingText):
         self.vertices = [to_pygame(self.body.local_to_world(v), self.env.camerapos) for v in self.bodyShape.get_vertices()]
         self.PYGpoly = pygame.draw.polygon(surface, self.color, self.vertices)
-        text(str(self.health), surface, 10, to_pygame(self.body.position + (0, -20), self.env.camerapos), (255, 255, 255), (0, 0, 0))
+        if isBlittingText:
+            text(str(self.health), surface, 10, to_pygame(self.body.position + (0, -20), self.env.camerapos), (255, 255, 255), (0, 0, 0))
         #pygame.draw.circle(surface, (255, 255, 255), self.body.position, 6)
 
     def isGettingDamaged(self):
         for e in self.env.explosions:
-            print("check")
             if e.isWithinRange(self.body.position):
-                return True
-        return False
+                return True, e.player
+        return False, None
 
     def update(self, action):
         self.reward = 0
@@ -76,19 +75,23 @@ class Player:
             self.canJump = True
         else:
             self.canJump = False
-        print(self.onGround)
 
         self.jumpCooldown -= 1
         self.fireCooldown -= 1
+
+        if self.body.velocity[1] > 2:
+            self.body.velocity += (0, 15)
 
         if action[0] == 0:
             if self.canJump:
                 self.body.velocity += (0, -self.jump)
                 self.jumpCooldown = 80
         if action[0] == 1:
-            self.bodyShape.friction = 10
+            if self.onGround:
+                self.body.velocity = [self.body.velocity[0]*.75, self.body.velocity[1]]
+            else:
+                self.body.velocity = [self.body.velocity[0]*.95, self.body.velocity[1]]
             self.isCrouching = True
-            print(self.isCrouching)
         else:
             self.isCrouching = False
         if action[0] == 2:
@@ -106,32 +109,31 @@ class Player:
                 else:
                     self.body.apply_force_at_local_point((-5000, 0))
 
-        if action[1] == 1 and self.fireCooldown < 0:
-            self.fire(action[2])
+        if action[1] == 1 and self.fireCooldown < 0 and len(self.env.bullets) < 20:
+            self.fire(action[2], action[3])
 
         if self.body.velocity[1] > 10:
             self.body.apply_force_at_world_point((0, 3000), self.body.position)
 
-        if self.isGettingDamaged() and self.damageTimer < 0:
-            self.reward -= 5
-            self.health -= 5
-            print("ow")
+        getDamaged = self.isGettingDamaged()
+        if getDamaged[0] and self.damageTimer < 0:
+            self.reward -= self.playerDamageDict[self == getDamaged[1]]
+            self.health -= self.playerDamageDict[self == getDamaged[1]]
             self.damageTimer = 10
 
         return self.reward
-    def fire(self, angle):
+
+    def fire(self, angle, speed):
         if self.gun == "grenade":
-            Grenade(300, angle, self.body.position, self, self.env.space)
+            Grenade(150+speed, angle, self.body.position, self, self.env.space)
 
     def reset(self):
-        self.body.position = (500 + r.randint(-100, 100), 300)
         self.body.angle = 0
         self.bodyShape.data = self
         self.jumpCooldown = 0
         self.fireCooldown = 0
         self.health = 100
         self.isCrouching = False
-        self.space.add(self.body, self.bodyShape)
 
 
 
@@ -198,21 +200,22 @@ class Grenade:
         self.explode()
 
     def explode(self):
-        Explosion(80, self.body.position, 10, self.env)
+        Explosion(80, self.body.position, 10, self.player, self.env)
         try:
             self.player.env.bullets.remove(self)
         except ValueError:
             pass
-        delete(self)
+        self.env.delete(self)
 
 class Explosion:
-    def __init__(self, rad, pos, span, env=None):
+    def __init__(self, rad, pos, span, player, env=None):
         self.pos = pos
         self.rad = rad
         self.lifeCycle = span
         self.env = env
+        self.player = player
         self.env.explosions.append(self)
-        for body in getAllBodies():
+        for body in self.env.getAllBodies():
             if self.isWithinRange(body.position):
                 dis = get_dist(self.pos, body.position)
                 strength = -20000/body.mass
@@ -296,74 +299,126 @@ class Rect:
         self.PYGpoly = pygame.draw.polygon(surface, (100, 100, 100), self.vertices)
 
 class GunEnv(gym.Env):
-    WinLoseRew = 10
-    damageRew = 1
+    winLoseRew = 10
+    enemyDamageRew = 5
+    selfDamagePun = 2
+    genRewBias = -3
+    winLoseRewBias = -2
+
     space = pym.Space()
-    space.gravity = (0, 500)
+    space.gravity = (0, 700)
     space.iterations = 30
 
     clock = pygame.time.Clock()
     frame = 0
+    attempt = 1
+    attemptFrame = 0
+
     screen = pygame.display.set_mode((1000, 600))
     pygame.display.set_caption("")
 
-    maxTrainingSteps = 10000
+    maxTrainingSteps = 500
     trainingSteps = 0
+
+    currentModelID = 0
+
+    textBlitting = False
+
+    modelAdvsCurrent = None
+    modelAdvsList = []
+    modelAdvsMaxLen = 3
+    modelAdvsChooseFreq = 1
 
     bullets = []
     explosions = []
     guns = ["grenade"]
 
-    def __init__(self, isRendering, hasHumanPlayer):
+    plt.ion()
+    attemptRewards = []
+    smoothedAttemptRewards = []
+    fig, ax = plt.subplots()
+    scatPlot = ax.scatter(range(1, len(attemptRewards) + 1), attemptRewards, s=2)
+    regPlot, = ax.plot(range(1, len(smoothedAttemptRewards) + 1), smoothedAttemptRewards, color=(1, 0, 0))
+    rewardThisAttempt = 0
+    smoothing = 200
+
+    def __init__(self, isRendering, hasHumanPlayer, advsModel, printsBasicdebug):
+        self.printsBasicDebug = printsBasicdebug
+        self.advsModel = advsModel
         self.isRendering = isRendering
         self.hasHumanPlayer = hasHumanPlayer
-        self.PlayerA = Player(self.space, self, (200, 0, 0))
-        self.PlayerB = Player(self.space, self, (0, 0, 200))
-        self.action_space = spaces.Tuple((spaces.Discrete(4), spaces.Discrete(359),
-                                         spaces.Discrete(1))) #(button, isFiring, firingAngle)
-        self.observation_space = spaces.Tuple((spaces.Box(low=-npy.inf, high=npy.inf, shape=(2, 2)),
-                                               spaces.Box(low=-npy.inf, high=npy.inf, shape=(2, 2)),
-                                               spaces.Sequence(spaces.Box(low=-npy.inf, high=npy.inf, shape=(2,2)))))
+        self.PlayerA = Player(self.space, self, (200, 0, 0), pos=(200, 430))
+        self.PlayerB = Player(self.space, self, (0, 0, 200), pos=(800, 430))
+        self.PlayerA.enemy = self.PlayerB
+        self.PlayerB.enemy = self.PlayerA
+        self.camerapos = [0, 100]
+        self.action_space = spaces.MultiDiscrete([4, 2, 360, 301]) #(button, isFiring, firingAngle)
+        self.observation_space = spaces.Dict(spaces=({"PlayerPosVel": spaces.Box(low=-npy.inf, high=npy.inf, shape=(4,), dtype=npy.int32),
+                                               "EnemyPosVel": spaces.Box(low=-npy.inf, high=npy.inf, shape=(4,), dtype=npy.int32),
+                                               "BulletsPosVel": spaces.Box(low=-npy.inf, high=npy.inf, shape=(80,), dtype=npy.int32)}))
                                                #((playerPos, playerVel), (enemyPos, enemyVel), ((bulletPos, bulletVel)...))
 
         self.selectedPlayer = self.PlayerA
 
         self.ground = [Rect((500, 500), (1000, 100), self),
-                  Rect((1300, 450), (1000, 150), self),
-                  Rect((-300, 450), (1000, 150), self),
-                  Rect([100, 300], [500, 25], self),
-                  Rect([1300, 200], [700, 50], self),
-                  Rect([1300, 400], [45, 200], self),
-                  Rect((2000, 375), (500, 250), self),
-                  Rect((1000, 75), (40, 250), self),
-                  Rect((2000, 50), (200, 50), self),
-                  Rect((-1300, 400), (1000, 75), self),
-                  Rect((-1600, 300), (50, 200), self),
-                  Rect((-1900, 100), (50, 350), self),
-                  Rect((-2300, 400), (1000, 75), self), ]
+                       Rect((0, 150), (100, 800), self),
+                       Rect((1000, 150), (100, 800), self),
+                       Rect((500, 350), (600, 24), self),
+                       Rect((500, 233), (24, 150), self),
+                       Rect((100, 254), (200, 24), self),
+                       Rect((900, 254), (200, 24), self),
+                       Rect((500, 146), (200, 24), self),
+                       Rect((810, 0), (150, 24), self),
+                       Rect((190, 0), (150, 24), self),
+                       Rect((500, -150), (1000, 100), self)]
 
-        if self.isRendering:
-            self.camerapos = [0, 0]
+        if not self.isRendering:
+            self.screen = pygame.display.set_mode((200, 200))
+
+        self.space.on_collision(
+            collision_type_a=1,
+            collision_type_b=2,
+            pre_solve=ifPlayerOnGround,
+        )
+
+        self.space.on_collision(
+            collision_type_a=1,
+            collision_type_b=3,
+            pre_solve=onBulletTouchEnemy,
+        )
 
     def _get_obs(self):
-        playerArr = npy.array(self.PlayerA.body.position, self.PlayerA.body.velocity)
-        enemyArr = npy.array(self.PlayerB.body.position, self.PlayerB.body.velocity)
-        bulletsArr = [npy.array([b.body.position, b.body.velocity]) for b in self.bullets]
-        return (playerArr, enemyArr, bulletsArr)
+        playerArr = npy.array([self.PlayerA.body.position[0], self.PlayerA.body.position[1], self.PlayerA.body.velocity[0], self.PlayerA.body.velocity[1]], dtype=npy.int32)
+        enemyArr = npy.array([self.PlayerB.body.position[0], self.PlayerB.body.position[1], self.PlayerB.body.velocity[0], self.PlayerB.body.velocity[1]], dtype=npy.int32)
+        bulletsArr = npy.array([[b.body.position[0], b.body.position[1], b.body.velocity[0], b.body.velocity[1]] for b in self.bullets] + [[0, 0, 0, 0]]*(20-len(self.bullets)), dtype=npy.int32).flatten()
+        return {"PlayerPosVel":playerArr, "EnemyPosVel":enemyArr, "BulletsPosVel":bulletsArr}
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self.PlayerA.reset()
+        self.PlayerA.body.position = (r.randint(200, 800), 430)
         self.PlayerB.reset()
+        self.PlayerB.body.position = (r.randint(200, 800), 430)
         for b in self.bullets:
-            delete(b)
+            try:
+                self.delete(b)
+            except TypeError:
+                pass
         self.bullets = []
         self.explosions = []
         self.trainingSteps = 0
+        if self.printsBasicDebug:
+            self.attempt += 1
+            self.attemptFrame = 0
+        if self.attempt % self.modelAdvsChooseFreq == 0:
+            self.chooseModelAdvs()
+        self.updatePlt(self.rewardThisAttempt)
+        self.rewardThisAttempt = 0
         return self._get_obs(), {}
 
     def step(self, action):
         reward = 0
         self.trainingSteps += 1
+        self.frame += 1
         done = False
 
         self.PlayerA.onGround = False
@@ -376,45 +431,106 @@ class GunEnv(gym.Env):
 
         screen.fill((0, 0, 0))
 
+        if not (self.modelAdvsCurrent == None):
+            modelAdvsAction, _ = self.modelAdvsCurrent.predict(self._get_obs(), deterministic=False)
+            reward -= self.PlayerB.update(modelAdvsAction)
         reward += self.PlayerA.update(action)
-        reward -= self.PlayerB.update(action)
+        reward += self.genRewBias/self.maxTrainingSteps
 
         if self.PlayerA.health <= 0:
-            reward -= 100
+            reward -= self.winLoseRew
+            reward += self.winLoseRewBias
             done = True
         if self.PlayerB.health <= 0:
-            reward += 100
+            reward += self.winLoseRew
+            reward -= self.winLoseRewBias
             done = True
 
         for e in enemies:
             e.update()
 
-        if self.selectedPlayer == 'A':
-            self.camerapos[0] -= ((self.PlayerA.body.position[0]+(((pygame.mouse.get_pos())[0] - 500)/2)/2) + (self.camerapos[0] - 500))/10
-            self.camerapos[1] -= ((self.PlayerA.body.position[1]+(((pygame.mouse.get_pos())[1] - 300)/2)/2) + (self.camerapos[1] - 300))/10
-        else:
-            self.camerapos[0] -= ((self.PlayerB.body.position[0] + (((pygame.mouse.get_pos())[0] - 500) / 2) / 2) + (self.camerapos[0] - 500)) / 10
-            self.camerapos[1] -= ((self.PlayerB.body.position[1] + (((pygame.mouse.get_pos())[1] - 300) / 2) / 2) + (self.camerapos[1] - 300)) / 10
-
-        frame_time = t.time() - s
-        if frame_time < 1 / 60:
-            t.sleep(1 / 60 - frame_time)
+        #self.camerapos[0] -= ((self.selectedPlayer.body.position[0]+(((pygame.mouse.get_pos())[0] - 500)/2)/2) + (self.camerapos[0] - 500))/10
+        #self.camerapos[1] -= ((self.selectedPlayer.body.position[1]+(((pygame.mouse.get_pos())[1] - 300)/2)/2) + (self.camerapos[1] - 300))/10
 
         if self.trainingSteps >= self.maxTrainingSteps:
             done = True
 
-        return self._get_obs(), reward, done, {}
+        self.rewardThisAttempt += reward
+
+        if self.isRendering:
+            self.render()
+
+        for ev in pygame.event.get():
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_p:
+                    pdb.set_trace()
+            elif ev.type == pygame.QUIT:
+                pygame.quit()
+
+        if self.printsBasicDebug:
+            if not(self.modelAdvsCurrent == None):
+                print(f'PA Act: {action}, PB Act: {modelAdvsAction}, frame: {self.frame}, ModelID: {self.currentModelID}')
+            else: print(f'PA Act: {action}, models: {self.modelAdvsList}, frame: {self.frame}, ModelID: {self.currentModelID}')
+
+        return self._get_obs(), reward, done, False, {}
 
     def render(self):
         for exp in self.explosions:
             exp.draw(screen)
-        self.PlayerA.draw(screen)
-        self.PlayerB.draw(screen)
+        self.PlayerA.draw(screen, self.textBlitting)
+        self.PlayerB.draw(screen, self.textBlitting)
         for r in self.ground:
             r.draw(screen)
         for b in self.bullets:
             b.update(screen)
-        pygame.display.flip()
+        try:
+            pygame.display.flip()
+        except UnicodeDecodeError:
+            pass
+
+    def chooseModelAdvs(self):
+        try:
+            self.modelAdvsCurrent = r.choice(self.modelAdvsList)
+        except IndexError:
+            return None
+
+    def addModeltoList(self, model):
+        self.modelAdvsList.append(model)
+        if len(self.modelAdvsList) > self.modelAdvsMaxLen:
+            self.modelAdvsList.pop(0)
+
+    def updatePlt(self, newItem):
+        self.attemptRewards.append(int(newItem))
+        if len(self.attemptRewards) >= 2000:
+            self.attemptRewards.pop(0)
+        smoothInds = [i for i in range(-self.smoothing, self.smoothing + 1)]
+        avg = 0
+        for ind in range(0, len(self.attemptRewards)):
+            numsToBeAvgd = []
+            for sInd in smoothInds:
+                if ((ind + sInd) >= 0) and ((sInd + ind) <= (len(self.attemptRewards) - 1)):
+                    numsToBeAvgd.append(self.attemptRewards[sInd + ind])
+            if len(numsToBeAvgd) == 0:
+                numsToBeAvgd = [self.attemptRewards[ind]]
+            avg = sum(numsToBeAvgd) / len(numsToBeAvgd)
+            self.smoothedAttemptRewards.append(avg)
+        self.regPlot.set_data(range(1, len(self.smoothedAttemptRewards) + 1), self.smoothedAttemptRewards)
+        self.scatPlot.set_offsets(npy.c_[npy.array(range(1, len(self.attemptRewards) + 1)), npy.array(self.attemptRewards)])
+        self.ax.update_datalim(self.scatPlot.get_datalim(self.ax.transData))
+        self.ax.autoscale_view()
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+        plt.pause(0.001)
+        self.smoothedAttemptRewards = []
+
+    def getAllBodies(self):
+        return self.space.bodies
+
+    def delete(self, grenade):
+        try:
+            self.space.remove(grenade.body, grenade.bodyShape)
+        except AssertionError:
+            pass
 
 '''
     To obtain a list of all bodies present in a Pymunk Space object, the pymunk.batch module can be utilized. This module provides efficient methods for retrieving batched data from the space.
@@ -482,15 +598,6 @@ def to_pymunk(pos, camerapos):
 def debug(message, value):
     print(str(message) + ": " + str(value))
 
-def delete(self):
-    try:
-        env.space.remove(self.body, self.bodyShape)
-    except AssertionError:
-        pass
-
-def getAllBodies():
-    return env.space.bodies
-
 def get_angle(p1, p2):
     return npy.arctan2(p1[1] - p2[1], p1[0] - p2[0])
 
@@ -523,20 +630,10 @@ Rect((1000, 0), (100, 1100)),
 Rect((500, 350), (500, 30)),
 ]
 '''
-env = GunEnv(True, True)
+#env = GunEnv(True, True)
 
-env.space.on_collision(
-    collision_type_a=1,
-    collision_type_b=2,
-    pre_solve=ifPlayerOnGround,
-)
 
-env.space.on_collision(
-    collision_type_a=1,
-    collision_type_b=3,
-    pre_solve=onBulletTouchEnemy,
-)
-
+'''
 buttons = [pygame.K_w, pygame.K_s, pygame.K_d, pygame.K_a]
 
 while running:
@@ -552,12 +649,13 @@ while running:
     mpos = pygame.mouse.get_pos()
     bodypos = to_pygame(env.selectedPlayer.body.position, env.camerapos)
     angle = get_angle(mpos, bodypos)
-    env.step(npy.array([B, isFiring, angle]))
+    env.step(npy.array([B, isFiring, angle, 300]))
     print([B, isFiring])
     env.render()
     for ev in pygame.event.get():
         if ev.type == pygame.QUIT:
-            running = False
+            running = False'
+'''
 
 '''
 camerapos = [30, 0]
